@@ -1,0 +1,1085 @@
+---
+title: 'Customer Segmentation & Market Basket Analysis in Online Retail '
+author: "Maria Pilar Bifaretti"
+date: '2023'
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+---
+
+### THE DATASET & GOAL OF THE ANALYSIS
+
+The world of online retail opens up vast opportunities for businesses to understand and cater to their customers' diverse needs. In my quest for insights, I used the Online Retail II dataset, made available by the UC Irvine Machine Learning Repository. It encapsulates the purchases made by registered customers of a non-store online retailer, spanning the period from 01/12/2009 to 09/12/2011.
+
+Within this data set lie 1,067,371 entries accompanied by 8 columns. Let's delve into the depths of this data set and explore its essence:
+
+1.  [InvoiceNo:]{.underline} A unique 6-digit integral number assigned to each transaction. Some transactions bear the mark of cancellation, designated by the letter 'c.'
+2.  [StockCode]{.underline}: A 5-digit integer that serves as the identifier to each distinct product
+3.  [Description]{.underline}: The product name that serves as description of what was bought.
+4.  [Quantity]{.underline}: A numeric field with the quantities of each product in the shopping carts of customers.
+5.  [InvoiceDate]{.underline}: Numeric field with the day and time when a transaction was generated.
+6.  [UnitPrice]{.underline}: Numeric field containing the price per unit of the product, denoted in sterling.
+7.  [CustomerID]{.underline}: A 5-digit integral number assigned to each customer, allowing for individual customer identification.
+8.  Country: The name of the country where each customer resides, categorized as a nominal attribute.
+
+**The *goal of the analysis* encompasses two key aspects: cluster analysis and market basket analysis.**
+
+-   [Cluster Analysis]{.underline}: The aim is to segment customers into distinct clusters based similarities in their purchasing behavior. By identifying meaningful clusters, we can better understand customer segments and tailor the retailer strategies to meet their specific needs. This analysis helps strike a balance between personalized service and a consistent product offering.
+
+-   [Market Basket Analysis]{.underline}: Exploring patterns of item associations within customer transactions. Market basket analysis uncovers frequently co-occurring products, enabling us to identify product affinities and make informed recommendations. This analysis provides valuable insights for cross-selling, inventory management, and personalized marketing initiatives.
+
+Through the combined power of cluster analysis and market basket analysis, the ultimate goal is to have comprehensive insights into customer behavior, enhance business decision-making, and unlock opportunities for strategic growth in the dynamic realm of online retail.
+
+### LIBRARIES
+
+For the analysis, we will be utilizing the following *R packages:*
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(DT)
+library(ggplot2)
+library(ggthemes)
+library(gridExtra)
+library(grid)
+library(cluster)
+library(psych)
+library(fmsb)
+library(pdftools)
+library(magick)
+library(arules)
+library(arulesViz)
+```
+
+### DATACLEANING
+
+Let's begin by importing the CSV file and exploring the data set:
+
+```{r}
+#Import the csv file 
+retail <- read.csv("online_retail_II.csv")
+
+# Get an overview of the dataset structure
+str(retail)
+```
+
+The data set consists of **8 variables**, and we have **1,067,371 customer records.**
+
+Next, let's *examine the first 10 rows* of the data to familiarize ourselves with its content:
+
+```{r}
+head(retail)
+```
+
+#### Null values & Duplicates
+
+Moving on to data cleaning, let's assess missing and null values in the data set:
+
+```{r}
+# Check for missing values
+colSums(is.na(retail))
+```
+
+The result shows that there are **243,007 missing values in the Customer.ID attribute.** As this attribute serves as our unique customer identifier, it is necessary to remove rows with missing Customer IDs.
+
+```{r}
+# Remove rows with missing Customer IDs
+retail <- retail[!is.na(retail$Customer.ID), ]
+
+# Check for null values
+any(is.null(retail))
+```
+
+Good news! There are **no null values** in the data set.
+
+Now, let's explore and **remove duplicates**, if any, to ensure data integrity:
+
+```{r}
+# Find duplicated rows based on all 8 attributes
+duplicated_rows <- duplicated(retail)
+
+# Display the duplicated rows
+duplicated_data <- retail[duplicated_rows, ]
+
+# Remove duplicate rows based on all 8 attributes
+retail <- unique(retail)
+
+# Verify the updated data set
+dim(retail)  # Check the dimensions of the updated data set
+```
+
+Following the removal of duplicate rows, the dataset now contains *797,885 observations.*
+
+#### Date and Time
+
+Next, we'll extract valuable insights by splitting the *'InvoiceDate'* attribute into two separate columns:
+
+```{r}
+# Convert "InvoiceDate" column to POSIXct format
+retail$InvoiceDate <- ymd_hms(retail$InvoiceDate)
+
+# Create new columns for date and time
+retail$Date <- as.Date(retail$InvoiceDate)
+retail$Time <- format(retail$InvoiceDate, format = "%H:%M:%S")
+
+# Convert Time column to POSIXct format
+retail$Time <- as.POSIXct(retail$Time, format = "%H:%M:%S")
+
+# Remove the original "InvoiceDate" column
+retail <- retail %>% 
+  select(-InvoiceDate)
+
+#Check results 
+head(retail, 3)
+```
+
+By separating the date and time components, we unlock the potential to analyze customer behavior at various temporal granularities.
+
+#### Day of the Week
+
+To add an extra layer of depth to the analysis, we'll create a *new attribute that reveals the specific day of the week* on which each purchase was made:
+
+```{r}
+retail$Weekday <- weekdays(retail$Date) 
+
+#Check results 
+head(retail, 3)
+```
+
+#### Distinguishing Cancellations and Non-Cancellations
+
+With the goal of having a comprehensive understanding, the analysis will embrace both success and setbacks. Hence, we choose to retain information about cancelled orders (indicated by an 'InvoiceNo' starting with 'c') and their potential influence on customer behavior.
+
+To facilitate analysis, we'll create a b*inary column that easily distinguishes between cancelled and non-cancelled orders:*
+
+```{r}
+retail <- retail %>% 
+  mutate(Cancelled = ifelse(substr(Invoice, 1, 1) == "C", 1, 0))
+
+#Check results 
+head(retail, 3)
+```
+
+#### Unique products purchased
+
+Let's look at the count of unique products purchased by each customer.
+
+```{r}
+# Subset the relevant columns for calculation
+subset_data_products <- retail %>%
+  select(Customer.ID, StockCode)
+
+# Calculate the count of unique products per customer
+unique_products <- subset_data_products %>%
+  group_by(Customer.ID) %>%
+  summarize(UniqueProducts = n_distinct(StockCode))
+
+# Merge unique_products with retail data frame
+retail <- merge(retail, unique_products, by = "Customer.ID", all.x = TRUE)
+
+# Print the merged data frame
+head(retail)
+```
+
+#### Recency, Frequency, and Monetary Attributes
+
+To unlock the full potential of the analysis and create meaningful customer segments, we'll introduce *three attributes:*
+
+a.  [Recency]{.underline}: How recently has a customer interacted with the business?
+b.  [Frequency]{.underline}: How often does a customer engage with the business?
+c.  [Monetary]{.underline}: What is the total amount of money a customer has spent with the business?
+
+```{r}
+# Calculate RECENCY for each Customer.ID
+recency <-retail %>%
+  group_by(Customer.ID) %>%
+  summarise(Recency = max(Date) - min(Date))
+
+# Merge recency values back into the original dataframe
+retail <- merge(retail, recency, by = "Customer.ID", all.x = TRUE)
+```
+
+```{r}
+# Calculate FREQUENCY for each Customer.ID
+frequency <- retail %>%
+  group_by(Customer.ID) %>%
+  summarise(Frequency = n_distinct(Invoice))
+
+# Join frequency values back into the original dataframe
+retail <- left_join(retail, frequency, by = "Customer.ID")
+```
+
+```{r}
+# Calculate MONETARY VALUE for each Customer.ID
+monetary <- retail %>%
+  group_by(Customer.ID) %>%
+  summarise(MonetaryValue = sum(Quantity * Price))
+
+# Join monetary values back into the original dataframe
+retail <- left_join(retail, monetary, by = "Customer.ID")
+```
+
+```{r}
+#Check results 
+head(retail)
+```
+
+With these three essential attributes in hand, we have unraveled useful information that will essential for the segmenting customers.
+
+Let us now take a moment to see the insights we have gained by examining some of the statistics associated with the newly created columns.
+
+```{r}
+#Lets explore some of the statistics of the new columns 
+RFM <- retail %>%
+  group_by(Customer.ID) %>%
+  select(Customer.ID, Recency, Frequency, MonetaryValue)
+
+RFM$Recency <- as.numeric(RFM$Recency)
+
+summary(RFM)
+
+```
+
+There are *some negative values in the MonetaryValue column*, which need to be addressed to ensure accurate clustering.
+
+To tackle this, we will be **filtering out these negative values,** we retain only the customers with positive purchases, setting the stage for more insightful and accurate clusters.
+
+```{r}
+retail <- retail %>%
+  filter(MonetaryValue > 0)
+```
+
+#### Outliers
+
+The box plot of MonetaryValue shows the presence of [outliers that can distort the clustering analysis.]{.underline} To ensure robust clusters, we must remove these outliers and preserve the integrity of our data:
+
+```{r}
+summary(retail$MonetaryValue)
+boxplot(retail$MonetaryValue, ylim = c(0, 40000))
+```
+
+We remove outliers lying beyond the 5th and 95th percentiles, refining our data set and preparing it for clustering.
+
+```{r}
+
+# Calculate the 5th and 95th percentiles
+lower_bound <- quantile(retail$MonetaryValue, 0.05)
+upper_bound <- quantile(retail$MonetaryValue, 0.95)
+
+# Filter the data frame to remove outliers
+retail <- retail %>%
+  filter(MonetaryValue >= lower_bound, MonetaryValue <= upper_bound)
+
+# Print the filtered data frame
+head(retail, 20)
+```
+
+### DATA EXPLORATION
+
+#### By country
+
+##### By Country #Percentage of transactions per country (TOP 10)
+
+```{r}
+# Calculate the percentage of transactions by country
+transactions_by_country <- retail %>%
+  distinct(Invoice, Country) %>%
+  group_by(Country) %>%
+  summarise(Percentage = n_distinct(Invoice) / n_distinct(retail$Invoice) * 100)
+
+# Select the top 10 countries
+top_10_countries <- transactions_by_country %>%
+  top_n(10)
+
+# Create the bar chart of top 10 countries
+top10_countries_transactions <-  ggplot(top_10_countries, aes(x = reorder (Country,-Percentage), y = Percentage, fill = Country)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Transactions",
+       x = "Country", y = "Pct of transactions") +
+  scale_fill_discrete(name = "Country") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+##### Percentage of revenue per country (TOP 10)
+
+```{r}
+
+# Calculate the percentage of revenue by country
+revenue_by_country <- retail %>%
+  group_by(Country) %>%
+  summarise(total_revenue = sum(MonetaryValue)) %>%
+  mutate(Percentage = (total_revenue / sum(total_revenue)) * 100)
+
+# Select the top 10 countries
+top_10_countries_revenue <- revenue_by_country %>%
+  top_n(10)
+
+#Plot
+top10_countries_revenue_g <- ggplot(top_10_countries_revenue, aes(x = reorder (Country,-Percentage), y = Percentage, fill = Country)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Revenue",
+       x = "Country", y = "Pct of revenue") +
+  scale_fill_discrete(name = "Country") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+##### Graphs
+
+```{r}
+# Combine the graphs into one grid
+country_graphs <- grid.arrange(top10_countries_transactions, 
+                               top10_countries_revenue_g, 
+                               nrow = 1,
+                               top=textGrob("NUMBERS BY COUNTRY", gp=gpar(fontsize=20)))
+ 
+```
+
+By analyzing the percentage of transactions and revenue by country, we can get valuable insights into customer behavior, market dynamics, and revenue sources. It will allow the company to identify of core markets, prioritize resource allocation, and tailor strategies to optimize customer engagement and revenue generation in each country.
+
+Some of the main takeaways:
+
+-   The [United Kingdom]{.underline} stands out as the *dominant* market both in terms of transactions and revenue, accounting for 91.63% and 92.06% respectively. This underscores the UK's significance to the company's overall operations and financial performance. It is *crucial to maintain a strong presence in the UK market and continue nurturing customer relationship*s to sustain high transaction volumes and revenue generation.
+
+-   [Germany and France]{.underline} emerge as key markets in both transactions and revenue. They contribute 2.72% and 2.91% to transactions, and 2.32% and 2.91% to revenue respectively. These countries offer *substantial growth potential* and should be targeted strategically to further expand customer reach and increase revenue streams.
+
+-   [Belgium, Channel Islands, Italy, Portugal, Spain, Sweden, Switzerland, and Norw]{.underline}ay contribute smaller percentages to both transactions and revenue. While their individual contributions may be relatively modest, these markets *should not be overlooked* as they collectively contribute to the company's customer base and revenue. Targeted marketing efforts tailored to the preferences and needs of customers in these countries can help maximize their potential and drive incremental growth.
+
+#### By Year
+
+##### Percentage of transaction by year
+
+```{r}
+
+# Extract the year from the Date column
+retail <- retail %>%
+  mutate(Year = format(Date, "%Y"))
+
+# Calculate the percentage of transactions by year
+transactions_by_year <- retail %>%
+  distinct(Invoice, Year) %>%
+  group_by(Year) %>%
+  summarize(Percentage = n_distinct(Invoice) / n_distinct(retail$Invoice) * 100)
+
+# Create the bar chart
+year_transactions <-  ggplot(transactions_by_year, aes(x = Year, y = Percentage, fill = Year)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Transactions",
+       x = "Year", y = "Pct of Transactions") +
+  scale_fill_discrete(name = "Year") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+  )
+```
+
+##### Percentage of revenue by year
+
+```{r}
+# Calculate the percentage of revenue by year
+revenue_by_year <- retail %>%
+  group_by(Year) %>%
+  summarize(total_revenue = sum(MonetaryValue)) %>%
+  mutate(Percentage = (total_revenue / sum(total_revenue)) * 100)
+
+# Create the bar chart
+year_revenue <- ggplot(revenue_by_year, aes(x = Year, y = Percentage, fill = Year)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Revenue",
+       x = "Year", y = "Pct of Revenue") +
+  scale_fill_discrete(name = "Year") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+  )
+```
+
+##### Graphs
+
+```{r}
+# Combine the graphs into one grid
+year_graphs <- grid.arrange(year_transactions, 
+                            year_revenue, 
+                            nrow = 1,
+                            top=textGrob("NUMBERS BY YEAR", gp=gpar(fontsize=20)))
+ 
+
+```
+
+The analysis of transaction and revenue percentages by year reveals valuable insights into the company's performance.
+
+-   In [**2010**]{.underline}, the company experienced a si*gnificant surge in both transaction volume (49.84%) and revenue generation (47.07%).* This suggests a period of heightened customer engagement and successful conversion of transactions into revenue. This might be the cause of effectively capitalizing on market opportunities, implementing successful marketing strategies, and meeting customer demands.
+
+-   Following **2010**, the company *maintained a solid performance in* [**2011**]{.underline}, with transaction percentages accounting for 46.09% and revenue percentages reaching 48.92%. This indicates that the company not only sustained customer engagement but also effectively converted transactions into revenue, leading to continued business growth.
+
+-   In contrast, the year [**2009**]{.underline} contributed a relatively *lower percentage of transactions (4.08%) and revenue (4.01%).* This suggests that the company was in its early stages of operation or faced external factors that limited growth during that period. This also presents an opportunity for the company to analyze the factors contributing to the lower performance
+
+#### By Month
+
+##### Percentage of transactions by month
+
+```{r}
+# Extract the year from the Date column
+retail <- retail %>%
+  mutate(Month = format(Date, "%m"))
+
+# Calculate the percentage of transactions by month
+transactions_by_month <- retail %>%
+  distinct(Invoice, Month) %>%
+  group_by(Month) %>%
+  summarize(Percentage = n_distinct(Invoice) / n_distinct(retail$Invoice) * 100)
+
+# Create the bar chart
+month_transactions <-  ggplot(transactions_by_month, aes(x = Month, y = Percentage, fill = Month)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Transactions",
+       x = "Month", y = "Pct of transactions") +
+  scale_fill_discrete(name = "Month") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+  )
+```
+
+##### Percentage of revenue by month
+
+```{r}
+# Calculate the percentage of revenue by year
+revenue_by_month <- retail %>%
+  group_by(Month) %>%
+  summarize(total_revenue = sum(MonetaryValue)) %>%
+  mutate(Percentage = (total_revenue / sum(total_revenue)) * 100)
+
+# Create the bar chart
+month_revenue <- ggplot(revenue_by_month, aes(x = Month, y = Percentage, fill = Month)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Revenue",
+       x = "Month", y = "Pct of Revenue") +
+  scale_fill_discrete(name = "Month") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+  )
+```
+
+##### Graphs
+
+```{r}
+# Combine the graphs into one grid
+month_graphs <- grid.arrange(month_transactions, 
+                            month_revenue, 
+                            nrow = 1,
+                            top=textGrob("NUMBERS BY MONTH", gp=gpar(fontsize=20)))
+ 
+```
+
+The analysis of transaction and revenue percentages by month provides insightful information about the company's sales patterns throughout the year. Several key observations can be made:
+
+-   [**Transaction Distribution**]{.underline}: The transaction percentages show varying levels of activity across different months. The months of November (13.98%), October (10.69%), and December (10.11%) stand out as the months with the highest transaction percentages. This indicates that the company experiences peak sales during the holiday season, likely driven by increased consumer spending during festive periods.
+
+-   [**Revenue Distribution**]{.underline}: The revenue percentages align with the transaction percentages, indicating a strong *correlation between transaction volume and revenue generation. T*he months of November (15.27%), October (10.92%), and December (10.24%) exhibit the highest revenue percentages.
+
+-   [**Seasonal Patterns**]{.underline}: The transaction and revenue percentages show an overall *increasing trend from January to November, with a slight decline in December.* This suggests a seasonal pattern, with higher sales and revenue in the *months leading up to the holiday season*. It is important for the company to anticipate and prepare for this seasonal variation by adjusting inventory levels, optimizing marketing campaigns, and ensuring sufficient resources to meet customer demand.
+
+-   **September** stands out with the *highest transaction percentage (9.18%) and revenue percentage (9.39%)* among non-holiday months. Understanding the factors driving this performance, can help the company develop targeted strategies to capitalize on this month's opportunities
+
+#### By Weekday
+
+##### Percentage of transactions by weekday
+
+```{r}
+# Calculate the percentage of transactions by weekday
+transactions_by_weekday <- retail %>%
+  distinct(Invoice, Weekday) %>%
+  group_by(Weekday) %>%
+  summarize(Percentage = n_distinct(Invoice) / n_distinct(retail$Invoice) * 100)
+
+# Create the bar chart
+weekday_transactions <-  ggplot(transactions_by_weekday, aes(x = reorder(Weekday, -Percentage), y = Percentage, fill = Weekday)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Transactions",
+       x = "Weekday", y = "Pct of Transactions") +
+  scale_fill_discrete(name = "Weekday") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+##### Percentage of revenue by weekday
+
+```{r}
+# Calculate the percentage of revenue by weekday
+revenue_by_weekday <- retail %>%
+  group_by(Weekday) %>%
+  summarize(total_revenue = sum(MonetaryValue)) %>%
+  mutate(Percentage = (total_revenue / sum(total_revenue)) * 100)
+
+# Create the bar chart
+weekday_revenue <-ggplot(revenue_by_weekday, aes(x = reorder(Weekday, -Percentage), y = Percentage, fill = Weekday)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Revenue",
+       x = "Weekday", y = "Pct of Revenue") +
+  scale_fill_discrete(name = "Weekday") +
+  theme_light()+
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    panel.grid.major = element_line(colour = "gray90"),
+    legend.position = "none", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+##### Graphs
+
+```{r}
+# Combine the graphs into one grid
+weekday_graphs <- grid.arrange(weekday_transactions, 
+                            weekday_revenue, 
+                            nrow = 1,
+                            top=textGrob("NUMBERS BY WEEKDAY", gp=gpar(fontsize=20)))
+ 
+```
+
+The analysis of transaction and revenue percentages by weekday reveals the following insights:
+
+-   [*Mondays*]{.underline} *and [Thursdays]{.underline} have higher transaction percentages*, indicating increased sales activity on these days. Revenue percentages align with transaction percentages, highlighting the correlation between transaction volume and revenue generation.
+
+-   Weekdays, especially Monday, Thursday, Tuesday, and Wednesday, contribute significantly to both transaction volume and revenue.
+
+-   Although weekends have lower transaction percentages, [*Sundays*]{.underline} *stand out with a notable revenue percentage, suggesting higher-value transactions on that day.*. This could be to a higher percentage of customers being wholesalers or businesses.
+
+-   Overall, sales and revenue are *evenly distributed throughout the weekdays, indicating a consistent customer base and engagement.*
+
+#### By hour
+
+##### Percentage of transactions by hour of the day
+
+```{r}
+
+# Extract the hour component from the Time column
+retail$Hour <- format(retail$Time, format = "%H")
+
+# Calculate the percentage of transactions by hour
+hourly_transactions <- retail %>%
+  group_by(Hour) %>%
+  summarise(NumInvoices = n_distinct(Invoice)) %>%
+  mutate(Percentage = NumInvoices / sum(NumInvoices) * 100)
+
+#Graph
+hour_transactions <-  ggplot(hourly_transactions, aes(x = Hour, y = Percentage)) +
+  geom_line(aes(group = 1)) +
+  geom_point() +
+  xlab("Hour of the Day") +
+  ylab("Percentage of Transactions") +
+  ggtitle("Hourly Transactions") +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+##### Percentage of revenue by hour of the day
+
+```{r}
+# Calculate the percentage of revenue by hour
+hourly_revenue <- retail %>%
+  group_by(Hour) %>%
+  summarise(TotalRevenue = sum(`MonetaryValue`)) %>%
+  mutate(Percentage = TotalRevenue / sum(TotalRevenue) * 100)
+
+#Create chart 
+hour_revenue <-  ggplot(hourly_revenue, aes(x = Hour, y = Percentage)) +
+  geom_line(aes(group = 1)) +
+  geom_point() +
+  xlab("Hour of the Day") +
+  ylab("Percentage of Revenue") +
+  ggtitle("Hourly Revenue") +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+##### Graphs
+
+```{r}
+# Combine the graphs into one grid
+hours_graphs <- grid.arrange(hour_transactions, 
+                            hour_revenue, 
+                            nrow = 1,
+                            top=textGrob("NUMBERS BY HOUR OF THE DAY", gp=gpar(fontsize=20)))
+ 
+```
+
+##### Graph (Option 2)
+
+```{r}
+ggplot() +
+  geom_line(data = hourly_transactions, aes(x = Hour, y = Percentage, color = "Transactions", group = 1)) +
+  geom_point(data = hourly_transactions, aes(x = Hour, y = Percentage, color = "Transactions")) +
+  geom_line(data = hourly_revenue, aes(x = Hour, y = Percentage, color = "Revenue", group = 1)) +
+  geom_point(data = hourly_revenue, aes(x = Hour, y = Percentage, color = "Revenue")) +
+  xlab("Hour of the Day") +
+  ylab("Percentage") +
+  ggtitle("Distribution of Transactions and Revenue by Hour of the Day") +
+  scale_color_manual(values = c("Transactions" = "cyan3", "Revenue" = "coral")) +
+  theme_minimal() +
+  theme(legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5))
+
+
+```
+
+The analysis of transaction and revenue percentages by hour of the day reveals the following insights:
+
+-   The majority of transactions and revenue occur during business hours, particularly between 9 AM and 5 PM. This could be due to a higher percentage of customers being wholesalers or businesses.
+
+-   *The highest transaction percentages are observed between 10 AM and 2 PM, peaking at 12 PM.* These hours represent the busiest period for transactions, suggesting that customers are more active and engaged during midday.
+
+-   Revenue percentages align with transaction percentages, highlighting a positive correlation.
+
+-   Outside of regular business hours, such as in the evening and early morning, both transaction and revenue percentages decline significantly. This indicates lower customer activity and potential opportunities to explore strategies to engage customers during non-peak hours.
+
+#### Order status
+
+```{r}
+# Calculate the count and percentage of cancelled and not cancelled orders
+status_counts <- retail %>%
+  group_by(Cancelled) %>%
+  summarise(Count = n()) %>%
+  mutate(Percentage = Count / sum(Count) * 100)
+
+# Print the table
+datatable(status_counts,
+          caption = "ORDER STATUS",
+          options = list(dom = 't', paging = FALSE, searching = FALSE))
+```
+
+-   The majority of orders, approximately 97.83%, are not cancelled, indicating a high rate of successful transactions and customer satisfaction.
+
+-   A small percentage, approximately **2.17%, of orders are cancelled**. While this percentage is *relatively low,* it is still important for the company to monitor and address the reasons behind cancellations to minimize their occurrence and potential impact on customer experience.
+
+### CLUSTERING
+
+Prepare the data
+
+```{r}
+#Create new df with only the variables that will be useful for the clustering analysis 
+data_cluster <- select(retail,c(Recency,Frequency,MonetaryValue, UniqueProducts))
+
+# Convert 'Recency' from difftime to numeric (Clustering algorithms prefer all variables to be of the same class)
+data_cluster$Recency <- as.numeric(data_cluster$Recency)
+```
+
+```{r}
+str(data_cluster)
+```
+
+##### Scale the data
+
+```{r}
+data_cluster = scale(data_cluster)
+
+#Check results
+head(data_cluster)
+```
+
+#### K-Means
+
+##### Total within sum of squares Plot
+
+```{r}
+within_ss = sapply(1:10,FUN = function(x){
+  set.seed(617)
+  kmeans(x = data_cluster,centers = x,iter.max = 1000,nstart = 25)$tot.withinss})
+  
+ggplot(data=data.frame(cluster = 1:10,within_ss),aes(x=cluster,y=within_ss))+
+  geom_line(col='steelblue',size=1.2)+
+  geom_point()+
+  scale_x_continuous(breaks=seq(1,10,1))
+```
+
+The total within sum of square and ratio plots support a three- and four- cluster solution.
+
+##### Ratio Plot
+
+```{r}
+ratio_ss = sapply(1:10,FUN = function(x) {
+  set.seed(617)
+  km = kmeans(x = data_cluster,centers = x,iter.max = 1000,nstart = 25)
+  km$betweenss/km$totss} )
+ggplot(data=data.frame(cluster = 1:10,ratio_ss),aes(x=cluster,y=ratio_ss))+
+  geom_line(col='steelblue',size=1.2)+
+  geom_point()+
+  scale_x_continuous(breaks=seq(1,10,1))
+```
+
+The total within sum of square and ratio plots support a two-, three- and four- cluster solution.
+
+###### How many people composed the 3 cluster solution
+
+```{r}
+set.seed(617)
+km3 = kmeans(x = data_cluster,centers = 3,iter.max=10000,nstart=25)
+k_segments3 = km3$cluster
+table(k_segments3)
+```
+
+###### How many people composed the 4 cluster solution
+
+```{r}
+set.seed(617)
+km4 = kmeans(x = data_cluster,centers = 4,iter.max=10000,nstart=25)
+k_segments4 = km4$cluster
+table(k_segments4)
+```
+
+#### Visualize
+
+####### 3-cluster solution
+
+```{r}
+temp_k3 = data.frame(cluster = factor(k_segments3),
+           factor1 = fa(data_cluster,nfactors = 2,rotate = 'varimax')$scores[,1],
+           factor2 = fa(data_cluster,nfactors = 2,rotate = 'varimax')$scores[,2])
+ggplot(temp_k3,aes(x=factor1,y=factor2,col=cluster))+
+  geom_point()+
+  scale_color_manual(values = c("#52B4E6", "#A18BF8", "#56BD97")) 
+
+```
+
+####### 4-cluster solution
+
+```{r}
+
+# Define your desired color palette
+my_colors <- c("#52B4E6", "#A18BF8", "#56BD97", "#E77D72")
+
+#Visualize
+temp_k4 = data.frame(cluster = factor(k_segments4),
+           factor1 = fa(data_cluster,nfactors = 2,rotate = 'varimax')$scores[,1],
+           factor2 = fa(data_cluster,nfactors = 2,rotate = 'varimax')$scores[,2])
+ggplot(temp_k4,aes(x=factor1,y=factor2,col=cluster))+
+  geom_point()+
+  scale_color_manual(values = my_colors)
+
+```
+
+After analyzing the results of the K-means clustering, it has been determined that a [***4-cluster solution***]{.underline} is the most suitable choice. This decision is primarily based on the *sizes of the clusters*. By opting for four clusters, we ensure that there are still sufficiently large groups, minimizing any potential operational challenges.
+
+Moreover, selecting a 4-cluster solution allows us to gain an advantage by *implementing more personalized strategies* for each group. With distinct clusters, we can tailor our approach and marketing efforts to meet the specific preferences and needs of each customer segment. This personalized approach has the potential to yield higher customer satisfaction, increased engagement, and improved overall business performance.
+
+###### Radar Chart
+
+####### 4-cluster solution
+
+```{r}
+# Create a data frame with the cluster labels and variables
+cluster_data_k4 <- data.frame(cluster = factor(k_segments4),
+                           Recency = retail$Recency,
+                           Frequency = retail$Frequency,
+                           MonetaryValue = retail$MonetaryValue,
+                           UniqueProducts = retail$UniqueProducts)
+
+# Calculate the means for each variable within each cluster
+cluster_means_k4 <- aggregate(. ~ cluster, cluster_data_k4, mean, na.rm = TRUE)
+
+print(cluster_means_k4)
+```
+
+####### Plot in radar chart
+
+```{r}
+# Create the cluster_means_k4 data frame
+cluster_means_k4 <- data.frame(
+  row.names  = (c(1, 2, 3, 4)),
+  Recency = c(643.1018, 735.4898, 258.1577, 611.2975),
+  Frequency = c(22.666418, 301.066357, 7.692058, 81.560941),
+  MonetaryValue = c(7092.512, 52386.118, 2319.603, 40640.432),
+  UniqueProducts = c(277.7927, 1949.4648, 136.7873, 456.2195)
+)
+
+# Define the variable ranges: maximum and minimum
+max_min_k4 <- data.frame(Recency = c(800, 0), Frequency = c(400, 0), MonetaryValue = c(55000, 0), UniqueProducts = c(2000,0))
+rownames(max_min_k4) <- c("Max", "Min")
+
+
+# Bind the variable ranges to the data
+df_k4 <- rbind(max_min_k4, cluster_means_k4)
+df_k4
+
+```
+
+Helper function to produce a beautiful radar chart:
+
+```{r}
+create_beautiful_radarchart <- function(data, color = "#00AFBB", 
+                                        vlabels = colnames(data), vlcex = 0.6,
+                                        caxislabels = NULL, title = NULL, ...){
+  radarchart(
+    data, axistype = 1,
+    # Customize the polygon
+    pcol = color, pfcol = scales::alpha(color, 0.5), plwd = 2, plty = 1,
+    # Customize the grid
+    cglcol = "grey", cglty = 1, cglwd = 0.8,
+    # Customize the axis
+    axislabcol = "transparent",  
+    # Variable labels
+    vlcex = vlcex, vlabels = vlabels,
+    caxislabels = caxislabels, title = title, ...
+  )
+}
+
+
+```
+
+Create separated spider charts for each cluster.
+
+```{r}
+# Define colors and titles
+colors <- c("#52B4E6", "#A18BF8", "#56BD97", "#E77D72")
+titles <- c("CLUSTER 1", "CLUSTER 2", "CLUSTER 3", "CLUSTER 4")
+
+# Reduce plot margin using par()
+op <- par(mar = c(1, 1, 1, 1))
+
+# Set the canvas size and chart size
+par(mfrow = c(1, 4), mar = c(5, 5, 4, 2))
+
+# Set the dimensions of the PDF file
+pdf("radar_charts(k4).pdf", width = 14, height = 7)
+
+# Set the layout
+par(mfrow = c(2, 2))
+
+# Loop through each cluster and create the radar chart
+for (i in 1:4) {
+  create_beautiful_radarchart(data = df_k4[c(1, 2, i+2), ],
+                              caxislabels = "",  # Remove caxislabels
+                              color = colors[i],
+                              title = titles[i])
+}
+
+
+# Close the PDF file
+dev.off()
+
+```
+
+####### Import Plot (4 Cluster Solution)
+
+```{r}
+knitr::include_graphics("radar_charts(k4).png")
+```
+
+#### Takeaways
+
+Based on the previous data, here are the possible strategies for each cluster:
+
+[**CLUSTER 1 - THE NEW CUSTOMER**]{.underline}
+
+These customers have not spent much but show potential for future engagement. To keep them engaged and coming back, the business can consider the following strategies:\
+Introduce them to new products: Send personalized recommendations based on their preferences and past purchases.
+
+-   [Offer discounts or deals]{.underline}: Provide special offers to incentivize repeat purchases and encourage them to explore more products.
+
+-   [Implement a loyalty program]{.underline}: Offer rewards for their continued engagement and purchases, encouraging them to become loyal customers.
+
+-   [Send targeted marketing campaigns]{.underline}: Use email or other communication channels to keep them informed about new products, promotions, and upcoming sales.
+
+[**CLUSTER 2 - THE LOYALIST**]{.underline}
+
+These customers already engage with the company frequently and are valuable for the business. The goal is to maintain their loyalty and ensure they keep coming back. Strategies for this cluster include:
+
+-   [Enhance the customer experience]{.underline}: Provide excellent customer service to ensure their satisfaction and address any issues promptly.
+
+-   [Personalize offers and recommendations]{.underline}: Analyze their past purchases and preferences to tailor product suggestions and promotions specifically for them.
+
+-   [Reward their loyalty]{.underline}: Implement an exclusive loyalty program with tiered benefits, offering discounts, early access to new products, or personalized rewards.
+
+-   [Seek feedback]{.underline}: Regularly collect feedback to understand their needs, preferences, and areas where the business can improve.
+
+[**CLUSTER 3 - THE FORGOTTEN/UNATTENDED**]{.underline}
+
+These customers have made a few purchases, but they are not engaged with the company. Strategies for this cluster may include:
+
+-   [Re-engage through targeted campaigns]{.underline}: Send personalized emails or notifications highlighting new products, offers, or relevant updates based on their previous purchases.
+
+-   [Offer incentives for re-engagement]{.underline}: Provide exclusive discounts or promotions to encourage them to make another purchase.
+
+-   [Implement a win-back program]{.underline}: Design a series of targeted messages to remind them of the brand and its value, emphasizing any improvements or new features since their last interaction.
+
+-   [Improve communication]{.underline}: Ensure that the business is actively reaching out to these customers, making them aware of ongoing promotions or relevant events.
+
+[**CLUSTER 4 - THE IRREGULAR**]{.underline}
+
+These customers have spent a significant amount on a few specific products but are not regular shoppers. To encourage repeat purchases, the following strategies can be considered:
+
+-   [Cross-selling and upselling]{.underline}: Recommend related products based on their previous purchases to increase their basket size.
+
+-   [Create product bundles or promotions]{.underline}: Offer discounts or package deals that include the products they have previously shown interest in, along with complementary items.
+
+-   [Send reminders or notifications]{.underline}: Notify them about restocks, limited-time offers, or promotions related to the products they have previously purchased.
+
+-   [Collect feedback]{.underline}: Understand their reasons for irregular shopping behavior and address any concerns or barriers that may prevent them from making repeat purchases.
+
+### MARKET BASKET ANALYSIS
+
+#### Pre-processing
+
+```{r}
+# Select the necessary columns for the analysis
+items <- retail[, c("Invoice", "Description")]
+
+
+#Convert the Description column to character or factor type
+items$Description <- as.character(items$Description)
+
+#Remove rows with missing values in Description column
+items <- items[complete.cases(items$Description), ]
+
+head(items,20)
+```
+
+```{r}
+# Convert the dataframe to a transaction object
+transactions <- as(split(items$Description, items$Invoice), "transactions")
+
+# Inspect the transactions
+summary(transactions) #Look at the console for results 
+```
+
+#### Explore Data
+
+Examine individual items. Support is set to 0 so we can see all items.
+
+```{r}
+itemFrequencyPlot(transactions, support = 0.0, cex.names=0.8, 
+                  type = "relative", horiz = TRUE, col = "#56BD97", las = 1, topN=10,
+                  xlab = paste("Proportion of Market Baskets Containing Item"))
+```
+
+#### Analysis
+
+Identify list association of rules.
+
+```{r}
+#We will filter rules with just two items are more actionable than ones that have many items.
+rules = apriori(transactions,parameter=list(support=0.01,confidence=0.5, minlen = 2)) 
+
+  #Support measures the frequency or popularity of an items in a data set. How often do A and B appear together. 
+  #Confidence quantifies the strength of an association rule between two items A and B." If A is already in the basket, what are the         chances the B is also added. 
+  #Lift values greater than 1 indicate a positive association between the two items (the occurrence of A increases the likelihood of B)
+```
+
+```{r}
+summary(rules)
+```
+
+The market basket analysis generated a set of [**65 rules**]{.underline}, with the majority *(60 rules) having a length of 2, and the remaining 5 rules having a length of 3.* This indicates that most associations are between two items.
+
+Quality Measures: The summary of quality measures provides information about the support, confidence, coverage, lift, and count for the generated rules. Here are some key observations:
+
+-   [Support]{.underline}: The minimum support for a rule is 0.01005, indicating that the rule appears in at least 1% of the transactions.
+
+-   [Confidence]{.underline}: The minimum confidence for a rule is 0.5006, implying that the rule is correct at least 50.06% of the time.
+
+-   [Lift]{.underline}: The minimum lift for a rule is 5.999, indicating that the rule has 5.999 times higher probability of occurrence compared to random chance.
+
+```{r}
+# Sort rules by lift in descending order
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+
+# Inspect the sorted rules
+inspect(sorted_rules)
+
+```
+
+#### Visualize
+
+Grouped matrix-based visualization.
+
+```{r}
+#Visualize the top 20 rules with a Grouped matrix-based visualization.
+pdf("grouped_matrix-based.pdf", width = 20, height = 10) 
+plot(rules, method = "grouped", control = list(k = 20))
+dev.off()
+
+#Import as PNG image
+knitr::include_graphics("/Users/pilarbifaretti/Desktop/Portfolio/Online Retail II/grouped_matrix-based.png")
+```
+
+Parallel coordinates plot
+
+```{r}
+#Visualize the top 20 rules with a Grouped matrix-based visualization.
+
+parallel_coordinates <- head(rules, n = 20, by = "lift")
+
+pdf("parallel_coordinates.pdf", width = 14, height = 10)  
+
+#Import as PNG image
+knitr::include_graphics("/Users/pilarbifaretti/Desktop/Portfolio/Online Retail II/parallel_coordinates.png")
+```
+
+#### Takeaways
+
+The retail dataset study reveals surprising patterns in client purchasing behavior. One noteworthy result is that [**purchasers prefer products that compliment one other or are offered in a variety of colors**]{.underline}. Customers who buy the pleasant "Poppy's Playhouse Bedroom" are more likely to buy the captivating "Poppy's Playhouse Kitchen," and vice versa. Moreover, customers show a tendency to purchase different kitchen accessories together, such as teacups and plates, indicating a preference for cohesive sets.
+
+The lift values for most rules are significantly greater than 1, indicating that thes*e associations are not simply due to chance* but have a substantial impact on the likelihood of purchasing the associated items together.
+
+**Recommendations** for the retailer based on these findings would be to consider the following strategies:
+
+1.  [Cross-selling]{.underline}: Leverage the strong associations between products to cross-promote them on the website. For example, when a customer views or purchases a home decor item , suggest the other related items from the same category.
+
+2.  [Bundling and Discounts]{.underline}: Consider creating bundled offers or discounts for related items to encourage customers to purchase them together.
+
+3.  [Personalization]{.underline}: Utilize association rules to personalize product recommendations for individual customers. If a customer has shown interest in one item from a related pair, then an associated item would be recommended to increase the likelihood of a purchase.
+
+4.  [Targeted Marketing]{.underline}: Use the associations to target specific customer segments. For instance, customers who have purchased "Green Regency Teacup and Saucer" and "Pink Regency Teacup and Saucer" together could be targeted with promotions for the "Roses Regency Teacup and Saucer."
+
+### CONCLUSIONS
+
+The analysis of the Online Retail II data set has provided **valuable insights into customer behavior, market dynamics, and revenue sources for the non-store online retailer**. The main goals of the analysis were achieved through cluster analysis and market basket analysis.
+
+[Data Exploration]{.underline}
+
+The exploration of the data provided a deeper understanding of customer behavior throughout the years, months, weekdays, and hours. Key insights were gained into transaction and revenue distribution, seasonal patterns, and peak activity hours. The analysis also highlighted the importance of the United Kingdom as the dominant market, with Germany and France being significant contributors to transactions and revenue.
+
+[Cluster Analysis]{.underline}
+
+The use of K-means clustering resulted in a 4-cluster solution, which allowed for meaningful customer segmentation. Each cluster represents a distinct group of customers with unique characteristics and behaviors. The four identified clusters are "The New Customer," "The Loyalist," "The Forgotten/Unattended," and "The Irregular." For each cluster, specific strategies were recommended to enhance customer engagement, loyalty, and repeat purchases.
+
+[Market Basket Analysis]{.underline}
+
+The market basket analysis revealed interesting product associations, showing that customers tend to buy complementary products together. Strong associations between items were identified, and lift values greater than 1 indicated significant impacts on the likelihood of purchasing associated items together. Recommendations based on these findings included cross-selling, bundling and discounts, personalized recommendations, and targeted marketing.
+
+[**FINAL RECOMMENDATIONS**]{.underline}
+
+Based on the analysis, the retailer should focus on personalized strategies for each customer cluster to maximize customer satisfaction and engagement. The company should continue to nurture customer relationships in the UK market and strategically target Germany and France for further growth. Additionally, the retailer should consider adjusting inventory levels, optimizing marketing campaigns, and offering targeted promotions to capitalize on seasonal patterns and increase revenue during peak periods.
+
+Incorporating cross-selling strategies, product bundling, and personalized product recommendations can enhance the customer experience and lead to increased revenue. Moreover, the retailer should actively seek feedback from customers to understand their preferences and continuously improve their offerings.
